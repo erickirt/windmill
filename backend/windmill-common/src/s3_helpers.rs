@@ -147,7 +147,7 @@ pub enum ObjectStoreReload {
 #[cfg(feature = "parquet")]
 pub async fn reload_object_store_setting(db: &crate::DB) -> ObjectStoreReload {
     use crate::{
-        ee::{get_license_plan, LicensePlan},
+        ee_oss::{get_license_plan, LicensePlan},
         global_settings::{load_value_from_global_settings, OBJECT_STORE_CONFIG_SETTING},
         s3_helpers::ObjectSettings,
     };
@@ -613,8 +613,8 @@ pub async fn build_object_store_from_settings(
             build_azure_blob_client(&azure_blob_resource).map(|x| ExpirableObjectStore::from(x))
         }
         ObjectSettings::AwsOidc(ref s3_aws_oidc_settings) => {
-            let token_generator = crate::job_s3_helpers_ee::TokenGenerator::AsServerInstance();
-            let res = crate::job_s3_helpers_ee::generate_s3_aws_oidc_resource(
+            let token_generator = crate::job_s3_helpers_oss::TokenGenerator::AsServerInstance();
+            let res = crate::job_s3_helpers_oss::generate_s3_aws_oidc_resource(
                 s3_aws_oidc_settings.clone(),
                 token_generator,
                 init_private_key,
@@ -890,4 +890,21 @@ pub async fn convert_json_line_stream<E: Into<anyhow::Error>>(
     });
 
     Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct DuckdbConnectionSettingsResponse {
+    pub connection_settings_str: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub azure_container_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub s3_bucket: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct DuckdbConnectionSettingsQueryV2 {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub s3_resource_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage: Option<String>,
 }

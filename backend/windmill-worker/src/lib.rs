@@ -20,12 +20,16 @@ mod csharp_executor;
 #[cfg(feature = "enterprise")]
 mod dedicated_worker;
 mod deno_executor;
+#[cfg(feature = "duckdb")]
+mod duckdb_executor;
 mod global_cache;
 mod go_executor;
 mod graphql_executor;
 mod handle_child;
 pub mod job_logger;
-mod job_logger_ee;
+#[cfg(feature = "private")]
+pub mod job_logger_ee;
+mod job_logger_oss;
 mod js_eval;
 #[cfg(feature = "mysql")]
 mod mysql_executor;
@@ -33,7 +37,9 @@ mod mysql_executor;
 mod nu_executor;
 #[cfg(feature = "oracledb")]
 mod oracledb_executor;
-mod otel_ee;
+#[cfg(feature = "private")]
+pub mod otel_ee;
+mod otel_oss;
 mod pg_executor;
 #[cfg(feature = "php")]
 mod php_executor;
@@ -51,9 +57,8 @@ mod worker_flow;
 mod worker_lockfiles;
 mod worker_utils;
 
-pub use worker_lockfiles::process_relative_imports;
-
 pub use worker::*;
+pub use worker_lockfiles::process_relative_imports;
 
 pub use result_processor::handle_job_error;
 
