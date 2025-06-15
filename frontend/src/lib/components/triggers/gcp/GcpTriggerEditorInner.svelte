@@ -18,10 +18,10 @@
 	import Required from '$lib/components/Required.svelte'
 	import GcpTriggerEditorConfigSection from './GcpTriggerEditorConfigSection.svelte'
 	import { base } from '$app/paths'
-	import type { Snippet } from 'svelte'
+	import { untrack, type Snippet } from 'svelte'
 	import TriggerEditorToolbar from '../TriggerEditorToolbar.svelte'
 	import { saveGcpTriggerFromCfg } from './utils'
-	import { handleConfigChange } from '../utils'
+	import { handleConfigChange, type Trigger } from '../utils'
 
 	let drawer: Drawer | undefined = $state(undefined)
 	let is_flow: boolean = $state(false)
@@ -55,8 +55,7 @@
 		hideTooltips = false,
 		isEditor = false,
 		allowDraft = false,
-		hasDraft = false,
-		isDraftOnly = false,
+		trigger = undefined,
 		isDeployed = false,
 		customLabel = undefined,
 		onConfigChange = undefined,
@@ -72,8 +71,7 @@
 		hideTooltips?: boolean
 		isEditor?: boolean
 		allowDraft?: boolean
-		hasDraft?: boolean
-		isDraftOnly?: boolean
+		trigger?: Trigger
 		isDeployed?: boolean
 		customLabel?: Snippet
 		onConfigChange?: (cfg: Record<string, any>, saveDisabled: boolean, updated: boolean) => void
@@ -225,7 +223,7 @@
 
 	async function handleToggleEnabled(toggleEnabled: boolean) {
 		enabled = toggleEnabled
-		if (!isDraftOnly && !hasDraft) {
+		if (!trigger?.draftConfig) {
 			await GcpTriggerService.setGcpTriggerEnabled({
 				path: initialPath,
 				workspace: $workspaceStore ?? '',
@@ -236,7 +234,8 @@
 	}
 
 	$effect(() => {
-		onCaptureConfigChange?.(captureConfig, isValid)
+		const args = [captureConfig, isValid] as const
+		untrack(() => onCaptureConfigChange?.(...args))
 	})
 
 	$effect(() => {
@@ -256,9 +255,9 @@
 				: 'New GCP Pub/Sub trigger'}
 			on:close={drawer?.closeDrawer}
 		>
-			<svelte:fragment slot="actions">
+			{#snippet actions()}
 				{@render actionsButtons()}
-			</svelte:fragment>
+			{/snippet}
 			{@render config()}
 		</DrawerContent>
 	</Drawer>
@@ -279,8 +278,6 @@
 {#snippet actionsButtons()}
 	{#if !drawerLoading && can_write}
 		<TriggerEditorToolbar
-			{isDraftOnly}
-			{hasDraft}
 			permissions={drawerLoading || !can_write ? 'none' : 'create'}
 			{saveDisabled}
 			{enabled}
@@ -293,6 +290,7 @@
 			{onDelete}
 			onToggleEnabled={handleToggleEnabled}
 			{cloudDisabled}
+			{trigger}
 		/>
 	{/if}
 {/snippet}
@@ -373,7 +371,7 @@
 				bind:delivery_config
 				bind:topic_id
 				bind:subscription_mode
-				bind:path
+				{path}
 				cloud_subscription_id={subscription_id}
 				create_update_subscription_id={subscription_id}
 				{can_write}

@@ -12,10 +12,10 @@
 	import { Loader2 } from 'lucide-svelte'
 	import Label from '$lib/components/Label.svelte'
 	import NatsTriggersConfigSection from './NatsTriggersConfigSection.svelte'
-	import type { Snippet } from 'svelte'
+	import { untrack, type Snippet } from 'svelte'
 	import TriggerEditorToolbar from '../TriggerEditorToolbar.svelte'
 	import { saveNatsTriggerFromCfg } from './utils'
-	import { handleConfigChange } from '../utils'
+	import { handleConfigChange, type Trigger } from '../utils'
 
 	interface Props {
 		useDrawer?: boolean
@@ -25,8 +25,7 @@
 		useEditButton?: boolean
 		isEditor?: boolean
 		allowDraft?: boolean
-		hasDraft?: boolean
-		isDraftOnly?: boolean
+		trigger?: Trigger
 		isDeployed?: boolean
 		cloudDisabled?: boolean
 		customLabel?: Snippet
@@ -44,8 +43,7 @@
 		hideTooltips = false,
 		isEditor = false,
 		allowDraft = false,
-		hasDraft = false,
-		isDraftOnly = false,
+		trigger = undefined,
 		isDeployed = false,
 		cloudDisabled = false,
 		customLabel = undefined,
@@ -227,7 +225,7 @@
 
 	async function handleToggleEnabled(toggleEnabled: boolean) {
 		enabled = toggleEnabled
-		if (!isDraftOnly && !hasDraft) {
+		if (!trigger?.draftConfig) {
 			await NatsTriggerService.setNatsTriggerEnabled({
 				path: initialPath,
 				workspace: $workspaceStore ?? '',
@@ -243,7 +241,8 @@
 	}
 
 	$effect(() => {
-		onCaptureConfigChange?.(captureConfig, isValid)
+		const args = [captureConfig, isValid] as const
+		untrack(() => onCaptureConfigChange?.(...args))
 	})
 
 	$effect(() => {
@@ -262,9 +261,9 @@
 				: 'New NATS trigger'}
 			on:close={drawer.closeDrawer}
 		>
-			<svelte:fragment slot="actions">
-				{@render actions()}
-			</svelte:fragment>
+			{#snippet actions()}
+				{@render actionsSnippet()}
+			{/snippet}
 			{@render config()}
 		</DrawerContent>
 	</Drawer>
@@ -276,17 +275,16 @@
 			{/if}
 		</svelte:fragment>
 		<svelte:fragment slot="action">
-			{@render actions()}
+			{@render actionsSnippet()}
 		</svelte:fragment>
 		{@render config()}
 	</Section>
 {/if}
 
-{#snippet actions()}
+{#snippet actionsSnippet()}
 	{#if !drawerLoading}
 		<TriggerEditorToolbar
-			{isDraftOnly}
-			{hasDraft}
+			{trigger}
 			permissions={drawerLoading || !can_write ? 'none' : 'create'}
 			{saveDisabled}
 			{enabled}

@@ -24,11 +24,11 @@
 	import JsonEditor from '$lib/components/JsonEditor.svelte'
 	import Toggle from '$lib/components/Toggle.svelte'
 	import WebsocketEditorConfigSection from './WebsocketEditorConfigSection.svelte'
-	import type { Snippet } from 'svelte'
+	import { untrack, type Snippet } from 'svelte'
 
 	import TriggerEditorToolbar from '../TriggerEditorToolbar.svelte'
 	import { saveWebsocketTriggerFromCfg } from './utils'
-	import { handleConfigChange } from '../utils'
+	import { handleConfigChange, type Trigger } from '../utils'
 
 	interface Props {
 		useDrawer?: boolean
@@ -38,8 +38,7 @@
 		useEditButton?: boolean
 		isEditor?: boolean
 		allowDraft?: boolean
-		hasDraft?: boolean
-		isDraftOnly?: boolean
+		trigger?: Trigger
 		isDeployed?: boolean
 		cloudDisabled?: boolean
 		customLabel?: Snippet
@@ -57,8 +56,7 @@
 		hideTooltips = false,
 		isEditor = false,
 		allowDraft = false,
-		hasDraft = false,
-		isDraftOnly = false,
+		trigger = undefined,
 		isDeployed = false,
 		customLabel = undefined,
 		onConfigChange = undefined,
@@ -258,7 +256,8 @@
 			.filter((v): v is { path: string; is_flow: boolean; args: ScriptArgs } => !!v)
 	)
 	$effect(() => {
-		loadInitialMessageRunnableSchemas(initialMessageRunnables)
+		;[initialMessageRunnables]
+		untrack(() => loadInitialMessageRunnableSchemas(initialMessageRunnables))
 	})
 
 	async function updateTrigger(): Promise<void> {
@@ -288,7 +287,7 @@
 
 	async function handleToggleEnabled(newEnabled: boolean) {
 		enabled = newEnabled
-		if (!isDraftOnly && !hasDraft) {
+		if (!trigger?.draftConfig) {
 			await WebsocketTriggerService.setWebsocketTriggerEnabled({
 				path: initialPath,
 				workspace: $workspaceStore!,
@@ -299,7 +298,8 @@
 	}
 
 	$effect(() => {
-		onCaptureConfigChange?.(captureConfig, isValid)
+		const args = [captureConfig, isValid] as const
+		untrack(() => onCaptureConfigChange?.(...args))
 	})
 
 	$effect(() => {
@@ -319,9 +319,9 @@
 				: 'New WebSocket trigger'}
 			on:close={drawer.closeDrawer}
 		>
-			<svelte:fragment slot="actions">
+			{#snippet actions()}
 				{@render actionsButtons()}
-			</svelte:fragment>
+			{/snippet}
 			{@render config()}
 		</DrawerContent>
 	</Drawer>
@@ -342,8 +342,7 @@
 {#snippet actionsButtons()}
 	{#if !drawerLoading}
 		<TriggerEditorToolbar
-			{isDraftOnly}
-			{hasDraft}
+			{trigger}
 			permissions={!drawerLoading && can_write ? 'create' : 'none'}
 			{enabled}
 			{allowDraft}
@@ -543,7 +542,7 @@
 														{schema}
 														bind:args={v.runnable_result.args}
 														shouldHideNoInputs
-														class="text-xs"
+														className="text-xs"
 														disabled={!can_write}
 													/>
 												{/await}

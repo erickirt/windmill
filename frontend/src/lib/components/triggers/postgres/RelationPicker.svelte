@@ -5,31 +5,67 @@
 	import Tooltip from '$lib/components/Tooltip.svelte'
 	import type { Relations } from '$lib/gen'
 	import { Plus, Trash, X } from 'lucide-svelte'
-	import MultiSelect from 'svelte-multiselect'
-	import { invalidRelations } from './utils'
+	import { getDefaultTableToTrack, invalidRelations } from './utils'
 	import AddPropertyFormV2 from '$lib/components/schema/AddPropertyFormV2.svelte'
 	import Label from '$lib/components/Label.svelte'
 	import { emptyStringTrimmed, sendUserToast } from '$lib/utils'
+	import MultiSelect from 'svelte-multiselect'
 
-	export let relations: Relations[] | undefined = undefined
-	export let can_write: boolean = true
-	export let disabled: boolean = false
-	let selected: 'all' | 'specific' = relations && relations.length > 0 ? 'specific' : 'all'
-	let cached: Relations[] | undefined = relations
+	interface Props {
+		relations?: Relations[] | undefined
+		can_write?: boolean
+		disabled?: boolean
+		pg14?: boolean
+	}
+
+	let {
+		relations = $bindable(undefined),
+		can_write = true,
+		disabled = false,
+		pg14 = $bindable(false)
+	}: Props = $props()
+
+	let selected = $derived(relations && relations.length > 0 ? 'specific' : 'all')
+
+	let cached: Relations[] | undefined = $state(relations)
+
+	$effect(() => {
+		if (pg14 && relations) {
+			relations.forEach((relation) => {
+				if (relation.table_to_track.length === 0) {
+					relation.table_to_track.push({ table_name: '' })
+				} else {
+					relation.table_to_track.forEach((table_to_track) => {
+						if (table_to_track.columns_name) {
+							table_to_track.columns_name = undefined
+						}
+						if (!emptyStringTrimmed(table_to_track.where_clause)) {
+							table_to_track.where_clause = undefined
+						}
+					})
+				}
+			})
+		}
+	})
 
 	function addTable(name: string, index: number) {
-		if (!relations || !Array.isArray(relations)) {
-			relations = [
-				{
-					schema_name: 'public',
-					table_to_track: []
-				}
-			]
+		if (relations) {
+			relations[index].table_to_track = relations[index].table_to_track.concat({
+				table_name: name,
+				columns_name: []
+			})
 		}
-		relations[index].table_to_track = relations[index].table_to_track.concat({
-			table_name: name,
-			columns_name: []
-		})
+	}
+
+	function updateRelationsFor(i: number, updateFn: (r: Relations) => Relations) {
+		if (relations) {
+			relations = relations.map((r, index) => {
+				if (i === index) {
+					r = updateFn(r)
+				}
+				return r
+			})
+		}
 	}
 </script>
 
@@ -42,20 +78,25 @@
 						cached = relations
 						relations = undefined
 					} else {
-						relations = cached ?? [
-							{
-								schema_name: 'public',
-								table_to_track: []
+						if (!cached || cached.length === 0) {
+							if (!relations || relations.length == 0) {
+								relations = getDefaultTableToTrack(pg14)
+								cached = relations
+							} else {
+								cached = relations
 							}
-						]
+						} else {
+							relations = cached
+						}
 					}
 				}}
 				bind:selected
-				let:item
 				{disabled}
 			>
-				<ToggleButton value="all" label="All Tables" {item} />
-				<ToggleButton value="specific" label="Specific Tables" {item} />
+				{#snippet children({ item })}
+					<ToggleButton value="all" label="All Tables" {item} />
+					<ToggleButton value="specific" label="Specific Tables" {item} />
+				{/snippet}
 			</ToggleButtonGroup>
 		</div>
 	</div>
@@ -66,7 +107,7 @@
 				<div class="flex w-full gap-3 items-center">
 					<div class="w-full flex flex-col gap-2 border py-2 px-4 rounded-md">
 						<Label label="Schema Name" required class="w-full">
-							<svelte:fragment slot="header">
+							{#snippet header()}
 								<Tooltip small>
 									<p>
 										Enter the name of the <strong>schema</strong> that contains the table(s) you
@@ -75,7 +116,7 @@
 										be tracked for the selected transactions (insert, update, delete).
 									</p>
 								</Tooltip>
-							</svelte:fragment>
+							{/snippet}
 
 							<input class="mt-1" type="text" bind:value={v.schema_name} {disabled} />
 						</Label>
@@ -85,9 +126,9 @@
 									class="relative rounded bg-surface-disabled p-2 flex w-full flex-col gap-4 group"
 								>
 									<Label label="Table Name" required>
-										<svelte:fragment slot="header">
+										{#snippet header()}
 											<Tooltip small>Enter the name of the table you want to track.</Tooltip>
-										</svelte:fragment>
+										{/snippet}
 										<input
 											type="text"
 											bind:value={table_to_track.table_name}
@@ -95,9 +136,8 @@
 											{disabled}
 										/>
 									</Label>
-									<!-- svelte-ignore a11y-label-has-associated-control -->
 									<Label label="Columns">
-										<svelte:fragment slot="header">
+										{#snippet header()}
 											<Tooltip
 												documentationLink="https://www.windmill.dev/docs/core_concepts/postgres_triggers#selecting-specific-columns"
 												small
@@ -109,15 +149,25 @@
 												</p>
 												<p class="text-xs text-gray-500 mt-1">
 													<strong class="font-semibold">Note:</strong>
-													<br />- If your trigger contains <strong>UPDATE</strong> or
+													<br />
+													-
+													<strong
+														>Column-specific tracking is only supported in PostgreSQL 15 and above.</strong
+													>
+													<br />
+													- In PostgreSQL 14, all columns will be tracked automatically and selective
+													tracking will be disabled.
+													<br />
+													- If your trigger contains <strong>UPDATE</strong> or
 													<strong>DELETE</strong>
 													transactions, the row filter WHERE clause must contain only columns covered
 													by the <strong>replica identity</strong> (see REPLICA IDENTITY).
-													<br />- If your trigger contains only <strong>INSERT</strong> transactions,
-													the row filter WHERE clause can use any column.
+													<br />
+													- If your trigger contains only <strong>INSERT</strong> transactions, the row
+													filter WHERE clause can use any column.
 												</p>
 											</Tooltip>
-										</svelte:fragment>
+										{/snippet}
 										<div class="mt-1">
 											<MultiSelect
 												options={table_to_track.columns_name ?? []}
@@ -127,28 +177,45 @@
 												outerDivClass="!bg-surface !min-h-[38px] !border-[#d1d5db]"
 												noMatchingOptionsMsg=""
 												createOptionMsg={null}
+												disabled={pg14}
 												duplicates={false}
 												selected={table_to_track.columns_name ?? []}
 												placeholder="Select columns"
 												--sms-options-margin="4px"
-												{disabled}
 												onchange={(e) => {
 													const option = e.option?.toString()
-													if (e.type === 'add') {
-														option && table_to_track.columns_name?.push(option)
-													} else if (e.type === 'remove') {
-														table_to_track.columns_name = table_to_track.columns_name?.filter(
-															(column) => column !== option
-														)
-													} else if (e.type === 'removeAll') {
-														table_to_track.columns_name = []
-													} else {
-														console.error(
-															`Priority tags multiselect - unknown event type: '${e.type}'`
-														)
-													}
+													updateRelationsFor(i, (rel) => {
+														const updatedTables = rel.table_to_track.map((t, idx) => {
+															if (idx !== j) return t
+
+															let updatedColumns = t.columns_name ?? []
+
+															if (e.type === 'add' && option) {
+																updatedColumns = [...updatedColumns, option]
+															} else if (e.type === 'remove') {
+																updatedColumns = updatedColumns.filter((col) => col !== option)
+															} else if (e.type === 'removeAll') {
+																updatedColumns = []
+															} else {
+																console.error(
+																	`Priority tags multiselect - unknown event type: '${e.type}'`
+																)
+															}
+
+															return {
+																...t,
+																columns_name: updatedColumns
+															}
+														})
+
+														return {
+															...rel,
+															table_to_track: updatedTables
+														}
+													})
 												}}
 											>
+												<!-- @migration-task: migrate this slot by hand, `remove-icon` is an invalid identifier -->
 												<svelte:fragment slot="remove-icon">
 													<div class="hover:text-primary p-0.5">
 														<X size={12} />
@@ -158,7 +225,7 @@
 										</div>
 									</Label>
 									<Label label="Where Clause">
-										<svelte:fragment slot="header">
+										{#snippet header()}
 											<Tooltip
 												documentationLink="https://www.windmill.dev/docs/core_concepts/postgres_triggers#filtering-rows-with-where-condition"
 												small
@@ -172,20 +239,30 @@
 												</p>
 												<p class="text-xs text-gray-500 mt-1">
 													<strong class="font-semibold">Note:</strong>
-													<br />- If your trigger contains <strong>UPDATE</strong> or
+													<br />
+													-
+													<strong
+														>Row filtering with WHERE clauses is only supported in PostgreSQL 15 and
+														above.</strong
+													>
+													<br />
+													- In PostgreSQL 14, row filtering is not available and this field is disabled.
+													<br />
+													- If your trigger contains <strong>UPDATE</strong> or
 													<strong>DELETE</strong>
 													transactions, the row filter WHERE clause must contain only columns covered
 													by the <strong>replica identity</strong> (see REPLICA IDENTITY).
-													<br />- If your trigger contains only <strong>INSERT</strong> transactions,
-													the row filter WHERE clause can use any column.
+													<br />
+													- If your trigger contains only <strong>INSERT</strong> transactions, the row
+													filter WHERE clause can use any column.
 												</p>
 											</Tooltip>
-										</svelte:fragment>
+										{/snippet}
 										<input
+											disabled={pg14}
 											type="text"
 											bind:value={table_to_track.where_clause}
 											class="!bg-surface mt-1"
-											{disabled}
 										/>
 									</Label>
 									<Button
@@ -195,7 +272,17 @@
 										color="light"
 										size="xs"
 										on:click={() => {
-											v.table_to_track = v.table_to_track.filter((_, index) => index !== j)
+											if (pg14 && v.table_to_track.length > 1) {
+												updateRelationsFor(i, (r) => ({
+													...r,
+													table_to_track: r.table_to_track.filter((_, idx) => idx !== j)
+												}))
+											} else if (!pg14) {
+												updateRelationsFor(i, (r) => ({
+													...r,
+													table_to_track: r.table_to_track.filter((_, idx) => idx !== j)
+												}))
+											}
 										}}
 										iconOnly
 										startIcon={{ icon: Trash }}
@@ -210,7 +297,7 @@
 								}}
 								{disabled}
 							>
-								<svelte:fragment slot="trigger">
+								{#snippet trigger()}
 									<Button
 										wrapperClasses="w-full border border-dashed rounded-md"
 										color="light"
@@ -221,7 +308,7 @@
 									>
 										Add table
 									</Button>
-								</svelte:fragment>
+								{/snippet}
 							</AddPropertyFormV2>
 						</div>
 					</div>
@@ -250,31 +337,26 @@
 				customName="Schema"
 				on:add={({ detail }) => {
 					if (relations == undefined || !Array.isArray(relations)) {
-						relations = []
-						relations = relations.concat({
-							schema_name: 'public',
-							table_to_track: []
-						})
+						relations = getDefaultTableToTrack(pg14)
 					} else if (emptyStringTrimmed(detail.name)) {
 						sendUserToast('Schema name must not be empty', true)
 					} else {
-						const appendedRelations = relations.concat({
-							schema_name: detail.name,
-							table_to_track: []
-						})
 						if (
-							invalidRelations(appendedRelations, {
+							invalidRelations(relations, {
 								showError: true,
 								trackSchemaTableError: false
 							}) === ''
 						) {
-							relations = appendedRelations
+							relations = relations.concat({
+								schema_name: detail.name,
+								table_to_track: pg14 ? [{ table_name: '' }] : []
+							})
 						}
 					}
 				}}
 				{disabled}
 			>
-				<svelte:fragment slot="trigger">
+				{#snippet trigger()}
 					<Button
 						variant="border"
 						color="light"
@@ -286,7 +368,7 @@
 					>
 						Add schema
 					</Button>
-				</svelte:fragment>
+				{/snippet}
 			</AddPropertyFormV2>
 		</div>
 	{/if}

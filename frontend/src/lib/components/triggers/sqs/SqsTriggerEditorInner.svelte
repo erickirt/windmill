@@ -12,10 +12,10 @@
 	import Section from '$lib/components/Section.svelte'
 	import ScriptPicker from '$lib/components/ScriptPicker.svelte'
 	import Required from '$lib/components/Required.svelte'
-	import type { Snippet } from 'svelte'
+	import { untrack, type Snippet } from 'svelte'
 	import TriggerEditorToolbar from '../TriggerEditorToolbar.svelte'
 	import { saveSqsTriggerFromCfg } from './utils'
-	import { handleConfigChange } from '../utils'
+	import { handleConfigChange, type Trigger } from '../utils'
 
 	interface Props {
 		useDrawer?: boolean
@@ -23,8 +23,7 @@
 		hideTarget?: boolean
 		hideTooltips?: boolean
 		allowDraft?: boolean
-		hasDraft?: boolean
-		isDraftOnly?: boolean
+		trigger?: Trigger
 		isEditor?: boolean
 		customLabel?: Snippet
 		isDeployed?: boolean
@@ -42,8 +41,7 @@
 		hideTarget = false,
 		hideTooltips = false,
 		allowDraft = false,
-		hasDraft = false,
-		isDraftOnly = false,
+		trigger = undefined,
 		isEditor = false,
 		customLabel = undefined,
 		isDeployed = false,
@@ -194,7 +192,7 @@
 
 	async function handleToggleEnabled(nEnabled: boolean) {
 		enabled = nEnabled
-		if (!isDraftOnly && !hasDraft) {
+		if (!trigger?.draftConfig) {
 			await SqsTriggerService.setSqsTriggerEnabled({
 				path: initialPath,
 				workspace: $workspaceStore ?? '',
@@ -232,7 +230,8 @@
 	}
 
 	$effect(() => {
-		onCaptureConfigChange?.(captureConfig, isValid)
+		const args = [captureConfig, isValid] as const
+		untrack(() => onCaptureConfigChange?.(...args))
 	})
 
 	$effect(() => {
@@ -252,9 +251,9 @@
 				: 'New SQS trigger'}
 			on:close={drawer.closeDrawer}
 		>
-			<svelte:fragment slot="actions">
-				{@render actions()}
-			</svelte:fragment>
+			{#snippet actions()}
+				{@render actionsSnippet()}
+			{/snippet}
 			{@render config()}
 		</DrawerContent>
 	</Drawer>
@@ -266,17 +265,16 @@
 			{/if}
 		</svelte:fragment>
 		<svelte:fragment slot="action">
-			{@render actions()}
+			{@render actionsSnippet()}
 		</svelte:fragment>
 		{@render config()}
 	</Section>
 {/if}
 
-{#snippet actions()}
+{#snippet actionsSnippet()}
 	{#if !drawerLoading}
 		<TriggerEditorToolbar
-			{isDraftOnly}
-			{hasDraft}
+			{trigger}
 			permissions={drawerLoading || !can_write ? 'none' : 'create'}
 			{saveDisabled}
 			{enabled}
