@@ -7,6 +7,16 @@
 	import '@codingame/monaco-vscode-standalone-css-language-features'
 	import '@codingame/monaco-vscode-standalone-typescript-language-features'
 	import '@codingame/monaco-vscode-standalone-html-language-features'
+	import {
+		editor as meditor,
+		KeyCode,
+		KeyMod,
+		Uri as mUri,
+		languages,
+		type IRange,
+		type IDisposable
+	} from 'monaco-editor'
+
 	languages.typescript.javascriptDefaults.setCompilerOptions({
 		target: languages.typescript.ScriptTarget.Latest,
 		allowNonTsExtensions: true,
@@ -14,12 +24,15 @@
 		noLib: true,
 		moduleResolution: languages.typescript.ModuleResolutionKind.NodeJs
 	})
-	languages.typescript.javascriptDefaults.setDiagnosticsOptions({
-		noSemanticValidation: false,
-		noSyntaxValidation: false,
-		noSuggestionDiagnostics: false,
-		diagnosticCodesToIgnore: [1108]
-	})
+	function setDiagnosticsOptions() {
+		languages.typescript.javascriptDefaults.setDiagnosticsOptions({
+			noSemanticValidation: false,
+			noSyntaxValidation: false,
+			noSuggestionDiagnostics: false,
+			diagnosticCodesToIgnore: [1108]
+		})
+	}
+	setDiagnosticsOptions()
 	languages.json.jsonDefaults.setDiagnosticsOptions({
 		validate: true,
 		allowComments: false,
@@ -44,23 +57,23 @@
 	import { BROWSER } from 'esm-env'
 
 	import { createHash, editorConfig, langToExt, updateOptions } from '$lib/editorUtils'
-	import {
-		editor as meditor,
-		KeyCode,
-		KeyMod,
-		Uri as mUri,
-		languages,
-		type IRange,
-		type IDisposable
-	} from 'monaco-editor'
+	// import {
+	// 	editor as meditor,
+	// 	KeyCode,
+	// 	KeyMod,
+	// 	Uri as mUri,
+	// 	languages,
+	// 	type IRange,
+	// 	type IDisposable
+	// } from 'monaco-editor'
 
 	import { allClasses } from './apps/editor/componentsPanel/cssUtils'
 
-	import { createEventDispatcher, onDestroy, onMount } from 'svelte'
+	import { createEventDispatcher, onDestroy, onMount, untrack } from 'svelte'
 
 	import libStdContent from '$lib/es6.d.ts.txt?raw'
 	import domContent from '$lib/dom.d.ts.txt?raw'
-	import { initializeVscode } from './vscode'
+	import { initializeVscode, keepModelAroundToAvoidDisposalOfWorkers } from './vscode'
 	import EditorTheme from './EditorTheme.svelte'
 	import { vimMode } from '$lib/stores'
 	import { initVim } from './monaco_keybindings'
@@ -144,8 +157,19 @@
 	}
 
 	export function setCode(ncode: string): void {
-		code = ncode
+		if (ncode != code) {
+			code = ncode
+		}
 		editor?.setValue(ncode)
+	}
+
+	function updateCode() {
+		const ncode = getCode()
+		if (code == ncode) {
+			return
+		}
+		code = ncode
+		dispatch('change', { code: ncode })
 	}
 
 	function updatePlaceholderVisibility(value: string) {
@@ -158,11 +182,11 @@
 
 	export function format() {
 		if (editor) {
-			code = getCode()
+			updateCode()
 			editor.getAction('editor.action.formatDocument')?.run()
 			if (formatAction) {
 				formatAction()
-				code = getCode()
+				updateCode()
 			}
 		}
 	}
@@ -214,13 +238,13 @@
 
 	$effect(() => {
 		if (allowVim && editor !== null && $vimMode && statusDiv) {
-			onVimMode()
+			untrack(() => onVimMode())
 		}
 	})
 
 	$effect(() => {
 		if (!$vimMode && vimDisposable) {
-			onVimDisable()
+			untrack(() => onVimDisable())
 		}
 	})
 
@@ -279,7 +303,7 @@
 
 	$effect(() => {
 		if (editor !== null && (lang || disableLinting || disableSuggestions || hideLineNumbers)) {
-			updateModelAndOptions()
+			untrack(() => updateModelAndOptions())
 		}
 	})
 
@@ -328,34 +352,39 @@
 		if (!divEl) {
 			return
 		}
-		editor = meditor.create(divEl as HTMLDivElement, {
-			...editorConfig(code, lang, automaticLayout, fixedOverflowWidgets),
-			model,
-			lineDecorationsWidth: 6,
-			lineNumbersMinChars: 2,
-			fontSize: fontSize,
-			quickSuggestions: disableSuggestions
-				? { other: false, comments: false, strings: false }
-				: { other: true, comments: true, strings: true },
-			suggestOnTriggerCharacters: !disableSuggestions,
-			wordBasedSuggestions: disableSuggestions ? 'off' : 'matchingDocuments',
-			parameterHints: { enabled: !disableSuggestions },
-			suggest: {
-				showIcons: !disableSuggestions,
-				showSnippets: !disableSuggestions,
-				showKeywords: !disableSuggestions,
-				showWords: !disableSuggestions,
-				snippetsPreventQuickSuggestions: disableSuggestions
-			}
-		})
+		try {
+			editor = meditor.create(divEl as HTMLDivElement, {
+				...editorConfig(code, lang, automaticLayout, fixedOverflowWidgets),
+				model,
+				lineDecorationsWidth: 6,
+				lineNumbersMinChars: 2,
+				fontSize: fontSize,
+				quickSuggestions: disableSuggestions
+					? { other: false, comments: false, strings: false }
+					: { other: true, comments: true, strings: true },
+				suggestOnTriggerCharacters: !disableSuggestions,
+				wordBasedSuggestions: disableSuggestions ? 'off' : 'matchingDocuments',
+				parameterHints: { enabled: !disableSuggestions },
+				suggest: {
+					showIcons: !disableSuggestions,
+					showSnippets: !disableSuggestions,
+					showKeywords: !disableSuggestions,
+					showWords: !disableSuggestions,
+					snippetsPreventQuickSuggestions: disableSuggestions
+				}
+			})
+		} catch (e) {
+			console.error('Error loading monaco:', e)
+			return
+		}
+		keepModelAroundToAvoidDisposalOfWorkers()
 
 		let timeoutModel: NodeJS.Timeout | undefined = undefined
 		editor.onDidChangeModelContent((event) => {
 			suggestion = ''
 			timeoutModel && clearTimeout(timeoutModel)
 			timeoutModel = setTimeout(() => {
-				code = getCode()
-				dispatch('change', { code })
+				updateCode()
 			}, 200)
 		})
 
@@ -365,7 +394,7 @@
 			loadExtraLib()
 
 			editor.addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, function () {
-				code = getCode()
+				updateCode()
 				shouldBindKey && format && format()
 			})
 
@@ -397,12 +426,12 @@
 		editor.onDidFocusEditorText(() => {
 			if (!editor) return
 			editor.addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, function () {
-				code = getCode()
+				updateCode()
 				shouldBindKey && format && format()
 			})
 
 			editor.addCommand(KeyMod.CtrlCmd | KeyCode.Enter, function () {
-				code = getCode()
+				updateCode()
 				shouldBindKey && cmdEnterAction && cmdEnterAction()
 			})
 			dispatch('focus')
@@ -410,8 +439,7 @@
 
 		editor.onDidBlurEditorText(() => {
 			dispatch('blur')
-
-			code = getCode()
+			updateCode()
 		})
 
 		if (lang === 'css' && !cssClassesLoaded) {
@@ -511,6 +539,7 @@
 		})
 	}
 
+	let previousExtraLib = undefined
 	function loadExtraLib() {
 		if (lang == 'javascript') {
 			const stdLib = { content: libStdContent, filePath: 'es6.d.ts' }
@@ -524,6 +553,10 @@
 					content: extraLib,
 					filePath: 'windmill.d.ts'
 				})
+				if (previousExtraLib == extraLib) {
+					return
+				}
+				previousExtraLib = extraLib
 			}
 			languages.typescript.javascriptDefaults.setExtraLibs(libs)
 		}
@@ -547,7 +580,7 @@
 
 	$effect(() => {
 		if (mounted && extraLib && initialized) {
-			loadExtraLib()
+			untrack(() => loadExtraLib())
 		}
 	})
 

@@ -19,7 +19,7 @@
 		type ConnectionInfo
 	} from '../common/alert/ConnectionIndicator.svelte'
 	import CaptureTable from './CaptureTable.svelte'
-	import { createEventDispatcher, onDestroy, getContext, onMount } from 'svelte'
+	import { createEventDispatcher, onDestroy, getContext, onMount, untrack } from 'svelte'
 	import type { CaptureTriggerKind, Capture } from '$lib/gen'
 	import CaptureIcon from './CaptureIcon.svelte'
 	import type { TriggerContext } from '$lib/components/triggers'
@@ -247,9 +247,9 @@
 	// Start or stop capture listening based on active state
 	$effect(() => {
 		if (captureInfo.active) {
-			listenForCaptures()
+			untrack(() => listenForCaptures())
 		} else {
-			stopCaptureListening()
+			untrack(() => stopCaptureListening())
 		}
 	})
 
@@ -307,7 +307,8 @@
 				<div class="mt-4 mb-2">
 					{#if displayAlert}
 						<Alert type="warning" title="Trigger deployed" size="xs" class="mb-4">
-							Capturing will suscribe to the trigger endpoint. Treat carefully.
+							Capturing on a deployed trigger can cause event loss on the deployed trigger. Treat
+							carefully.
 						</Alert>
 					{/if}
 					<Description>
@@ -431,7 +432,7 @@
 
 								dispatch('applyArgs', {
 									kind: testKind,
-									args: { ...structuredClone(payloadData), ...trigger_extra }
+									args: { ...structuredClone($state.snapshot(payloadData)), ...trigger_extra }
 								})
 							}
 						}}

@@ -15,9 +15,6 @@
 	import AnsiUp from 'ansi_up'
 	import { scroll_into_view_if_needed_polyfill } from './multiselect/utils'
 	import SplitPanesOrColumnOnMobile from './splitPanes/SplitPanesOrColumnOnMobile.svelte'
-	import Select from './apps/svelte-select/lib/Select.svelte'
-	import { SELECT_INPUT_DEFAULT_STYLE } from '$lib/defaults'
-	import DarkModeObserver from './DarkModeObserver.svelte'
 
 	export let searchTerm: string
 	export let queryParseErrors: string[] = []
@@ -398,26 +395,11 @@
 
 		return ret
 	}
-
-	function getSelectItems(allLogs: ByMode, countsPerHost: any): { label: string; value: any }[] {
-		return Object.entries(allLogsOrQueryResults(allLogs, countsPerHost)).flatMap(([mode, o1]) =>
-			Object.entries(o1).flatMap(([wg, o2]) =>
-				Object.keys(o2).map((hn) => ({
-					label: hn,
-					value: [mode, wg, hn]
-				}))
-			)
-		)
-	}
-
-	let darkMode = false
 </script>
-
-<DarkModeObserver bind:darkMode />
 
 <Drawer bind:this={logDrawer} bind:open={logDrawerOpen} size="1400px">
 	<DrawerContent title="See context" on:close={logDrawer.closeDrawer}>
-		<svelte:fragment slot="actions">
+		{#snippet actions()}
 			<Button
 				on:click={() => copyToClipboard(content)}
 				color="light"
@@ -428,7 +410,7 @@
 			>
 				Copy to clipboard
 			</Button>
-		</svelte:fragment>
+		{/snippet}
 		<div class="w-fit">
 			<pre
 				class="bg-surface-secondary text-secondary text-xs w-full p-2 whitespace-pre border rounded-md"
@@ -569,24 +551,6 @@
 						>
 					</div>
 				{/if}
-				<div class="mr-0.5">
-					<Select
-						justValue={selected}
-						items={getSelectItems(allLogs, countsPerHost)}
-						on:change={({ detail }) => {
-							// console.log(detail)
-							selected = detail.value
-						}}
-						on:clear={() => {
-							selected = undefined
-						}}
-						placeholder="Select a service"
-						inputStyles={SELECT_INPUT_DEFAULT_STYLE.inputStyles}
-						containerStyles={darkMode
-							? SELECT_INPUT_DEFAULT_STYLE.containerStylesDark
-							: SELECT_INPUT_DEFAULT_STYLE.containerStyles}
-					/>
-				</div>
 				{#each Object.entries(allLogsOrQueryResults(allLogs, countsPerHost)) as [mode, o1]}
 					<div class="w-full pb-8">
 						<h2 class="pb-2 text-2xl">{mode}s</h2>

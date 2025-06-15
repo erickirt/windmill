@@ -115,7 +115,7 @@
 	import { workspaceStore } from '$lib/stores'
 	import { type Preview, ResourceService, UserService } from '$lib/gen'
 	import type { Text } from 'yjs'
-	import { initializeVscode } from '$lib/components/vscode'
+	import { initializeVscode, keepModelAroundToAvoidDisposalOfWorkers } from '$lib/components/vscode'
 
 	import { initializeMode } from 'monaco-graphql/esm/initializeMode.js'
 	import type { MonacoGraphQLAPI } from 'monaco-graphql/esm/api.js'
@@ -133,6 +133,7 @@
 	import EditorTheme from './EditorTheme.svelte'
 	import {
 		BIGQUERY_TYPES,
+		DUCKDB_TYPES,
 		MSSQL_TYPES,
 		MYSQL_TYPES,
 		ORACLEDB_TYPES,
@@ -152,7 +153,7 @@
 	import { AIChatEditorHandler } from './copilot/chat/monaco-adapter'
 	import GlobalReviewButtons from './copilot/chat/GlobalReviewButtons.svelte'
 	import { writable } from 'svelte/store'
-	import { formatResourceTypes } from './copilot/chat/core'
+	import { formatResourceTypes } from './copilot/chat/script/core'
 	import FakeMonacoPlaceHolder from './FakeMonacoPlaceHolder.svelte'
 	// import EditorTheme from './EditorTheme.svelte'
 
@@ -186,7 +187,6 @@
 	export let files: Record<string, { code: string; readonly?: boolean }> | undefined = {}
 	export let extraLib: string | undefined = undefined
 	export let changeTimeout: number = 500
-	export let isAiPanelOpen: boolean = false
 	export let loadAsync = false
 
 	let lang = scriptLangToEditorLang(scriptLang)
@@ -206,7 +206,7 @@
 	let websocketInterval: NodeJS.Timeout | undefined
 	let lastWsAttempt: Date = new Date()
 	let nbWsAttempt = 0
-	let disposeMethod: () => void | undefined
+	let disposeMethod: (() => void) | undefined
 	const dispatch = createEventDispatcher()
 	let graphqlService: MonacoGraphQLAPI | undefined = undefined
 
@@ -343,7 +343,10 @@
 	}
 
 	export function setCode(ncode: string, noHistory: boolean = false): void {
-		code = ncode
+		if (code != ncode) {
+			code = ncode
+		}
+
 		if (noHistory) {
 			editor?.setValue(ncode)
 		} else {
@@ -361,6 +364,15 @@
 				editor.pushUndoStop()
 			}
 		}
+	}
+
+	function updateCode() {
+		const ncode = getCode()
+		if (code == ncode) {
+			return
+		}
+		code = ncode
+		dispatch('change', ncode)
 	}
 
 	export function append(code: string): void {
@@ -386,7 +398,7 @@
 
 	export async function format() {
 		if (editor) {
-			code = getCode()
+			updateCode()
 			if (lang != 'shell' && lang != 'nu') {
 				if ($formatOnSave != false) {
 					if (scriptLang == 'deno' && languageClients.length > 0) {
@@ -423,7 +435,7 @@
 						await editor?.getAction('editor.action.formatDocument')?.run()
 					}
 				}
-				code = getCode()
+				updateCode()
 			}
 			if (formatAction) {
 				formatAction()
@@ -482,7 +494,9 @@
 											? MSSQL_TYPES
 											: scriptLang === 'oracledb'
 												? ORACLEDB_TYPES
-												: []
+												: scriptLang === 'duckdb'
+													? DUCKDB_TYPES
+													: []
 					).map((t) => ({
 						label: t,
 						kind: languages.CompletionItemKind.Function,
@@ -1253,15 +1267,22 @@
 
 		onFileChanges()
 
-		editor = meditor.create(divEl as HTMLDivElement, {
-			...editorConfig(code, lang, automaticLayout, fixedOverflowWidgets),
-			model,
-			fontSize: !small ? 14 : 12,
-			lineNumbersMinChars,
-			// overflowWidgetsDomNode: widgets,
-			tabSize: lang == 'python' ? 4 : 2,
-			folding
-		})
+		try {
+			editor = meditor.create(divEl as HTMLDivElement, {
+				...editorConfig(code, lang, automaticLayout, fixedOverflowWidgets),
+				model,
+				fontSize: !small ? 14 : 12,
+				lineNumbersMinChars,
+				// overflowWidgetsDomNode: widgets,
+				tabSize: lang == 'python' ? 4 : 2,
+				folding
+			})
+		} catch (e) {
+			console.error('Error loading monaco:', e)
+			return
+		}
+
+		keepModelAroundToAvoidDisposalOfWorkers()
 
 		// updateEditorKeybindingsMode(editor, 'vim', undefined)
 
@@ -1270,9 +1291,7 @@
 		editor?.onDidChangeModelContent((event) => {
 			timeoutModel && clearTimeout(timeoutModel)
 			timeoutModel = setTimeout(() => {
-				let ncode = getCode()
-				code = ncode
-				dispatch('change', ncode)
+				updateCode()
 			}, changeTimeout)
 
 			ataModel && clearTimeout(ataModel)
@@ -1291,12 +1310,12 @@
 			dispatch('focus')
 
 			editor?.addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, function () {
-				code = getCode()
+				updateCode()
 				shouldBindKey && format && format()
 			})
 
 			editor?.addCommand(KeyMod.CtrlCmd | KeyCode.Enter, function () {
-				code = getCode()
+				updateCode()
 				shouldBindKey && cmdEnterAction && cmdEnterAction()
 			})
 
@@ -1318,9 +1337,6 @@
 						startLine: selection.startLineNumber,
 						endLine: selection.endLineNumber
 					})
-					if (!isAiPanelOpen) {
-						dispatch('toggleAiPanel')
-					}
 				} else {
 					dispatch('toggleAiPanel')
 				}
@@ -1352,6 +1368,7 @@
 			try {
 				closeWebsockets()
 				vimDisposable?.dispose()
+				console.log('disposing editor')
 				model?.dispose()
 				editor && editor.dispose()
 				console.log('disposed editor')
