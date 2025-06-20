@@ -1,12 +1,11 @@
 <script lang="ts">
 	import { workspaceStore } from '$lib/stores'
 	import { CaptureService, type CaptureConfig, type CaptureTriggerKind } from '$lib/gen'
-	import { onDestroy } from 'svelte'
+	import { onDestroy, untrack } from 'svelte'
 	import { isObject, sendUserToast, sleep } from '$lib/utils'
 	import RouteCapture from './http/RouteCapture.svelte'
 	import type { ConnectionInfo } from '../common/alert/ConnectionIndicator.svelte'
 	import type { CaptureInfo } from './CaptureSection.svelte'
-	import { invalidRelations } from './postgres/utils'
 	import WebhooksCapture from './webhook/WebhooksCapture.svelte'
 	import EmailTriggerCaptures from '../details/EmailTriggerCaptures.svelte'
 	import WebsocketCapture from './websocket/WebsocketCapture.svelte'
@@ -53,21 +52,6 @@
 	const config: CaptureConfig | undefined = $derived(captureConfigs[captureType])
 
 	export async function setConfig(): Promise<boolean> {
-		if (captureType === 'postgres') {
-			if (!args?.publication?.table_to_track) {
-				sendUserToast('Table to track must be set', true)
-				return false
-			}
-
-			if (
-				invalidRelations(args.publication.table_to_track, {
-					showError: true,
-					trackSchemaTableError: true
-				}) !== ''
-			) {
-				return false
-			}
-		}
 		try {
 			await CaptureService.setCaptureConfig({
 				requestBody: {
@@ -190,7 +174,8 @@
 		}
 	}
 	$effect(() => {
-		updateConnectionInfo(config, captureActive)
+		const args = [config, captureActive] as const
+		untrack(() => updateConnectionInfo(...args))
 	})
 
 	let captureInfo: CaptureInfo = $derived({
@@ -224,7 +209,7 @@
 			<PostgresCapture
 				{captureInfo}
 				{captureLoading}
-				postgres_resource_path={args.postgres_resource_path}
+				{isValid}
 				{hasPreprocessor}
 				{isFlow}
 				{triggerDeployed}

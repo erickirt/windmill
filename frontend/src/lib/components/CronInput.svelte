@@ -2,17 +2,14 @@
 	import { ScheduleService } from '$lib/gen'
 	import { emptyString, formatCron, sendUserToast } from '$lib/utils'
 	import Badge from './Badge.svelte'
-	// @ts-ignore
-	import Multiselect from 'svelte-multiselect'
 	import { Button } from './common'
-	import Select from '../components/apps/svelte-select/lib/index'
 	import timezones from './timezones'
-	import { SELECT_INPUT_DEFAULT_STYLE } from '$lib/defaults'
-	import { onMount } from 'svelte'
 	import CronBuilder from './CronBuilder.svelte'
 	import Label from './Label.svelte'
 	import CronGen from './copilot/CronGen.svelte'
-	import DarkModeObserver from './DarkModeObserver.svelte'
+	import Select from './select/Select.svelte'
+	import MultiSelect from './select/MultiSelect.svelte'
+	import { safeSelectItems } from './select/utils.svelte'
 
 	export let schedule: string
 	// export let offset: number = -60 * Math.floor(new Date().getTimezoneOffset() / 60)
@@ -171,19 +168,6 @@
 			}).format
 		}
 	}
-	let darkMode: boolean = false
-
-	function onThemeChange() {
-		if (document.documentElement.classList.contains('dark')) {
-			darkMode = true
-		} else {
-			darkMode = false
-		}
-	}
-
-	onMount(() => {
-		onThemeChange()
-	})
 
 	const items = Object.keys(timezones)
 		.map((key) => {
@@ -192,15 +176,13 @@
 					return {
 						value: subKey,
 						label: subKey,
-						group: timezones[key][subKey][1]
+						group: timezones[key][subKey][1] as string
 					}
 				})
 				.flat()
 		})
 		.flat()
 </script>
-
-<DarkModeObserver on:change={onThemeChange} />
 
 <div class="w-full flex space-x-8">
 	<div class="w-full flex flex-col gap-4">
@@ -234,17 +216,15 @@
 				</div>
 			{:else}
 				<Select
-					inputStyles={SELECT_INPUT_DEFAULT_STYLE.inputStyles}
-					containerStyles={'border-color: lightgray;' +
-						(darkMode
-							? SELECT_INPUT_DEFAULT_STYLE.containerStylesDark
-							: SELECT_INPUT_DEFAULT_STYLE.containerStyles)}
 					{items}
+					class="w-full"
+					bind:value={timezone}
 					groupBy={(item) => item.group}
-					on:change={(w) => {
-						timezone = w.detail.label
+					sortBy={(a, b) => {
+						if (a.group[0] === '+' && b.group[0] === '-') return -1
+						if (a.group[0] === '-' && b.group[0] === '+') return 1
+						return a.group.localeCompare(b.group)
 					}}
-					value={timezone}
 				/>
 			{/if}
 		</Label>
@@ -257,7 +237,7 @@
 							<div class="text-secondary text-sm leading-none">Execute schedule every</div>
 
 							<div class="w-full flex gap-4">
-								<div class="w-full flex flex-col gap-1">
+								<div class="w-full flex flex-col gap-1 mb-2">
 									<select
 										{disabled}
 										name="execute_every"
@@ -300,26 +280,24 @@
 						<div class="w-full flex flex-col gap-4">
 							{#if executeEvery == 'month'}
 								<div class="w-full flex flex-col">
-									<Multiselect
+									<MultiSelect
+										disablePortal
 										{disabled}
-										bind:selected={monthsOfYear}
-										options={monthsOfYearOptions}
-										selectedOptionsDraggable={false}
+										bind:value={monthsOfYear}
+										items={safeSelectItems(monthsOfYearOptions)}
 										placeholder="Every month"
-										ulOptionsClass={'!bg-surface-secondary'}
 									/>
 								</div>
 							{/if}
 
 							{#if executeEvery == 'day-week'}
 								<div class="w-full flex flex-col">
-									<Multiselect
+									<MultiSelect
+										disablePortal
 										{disabled}
-										bind:selected={daysOfWeek}
-										options={daysOfWeekOptions}
-										selectedOptionsDraggable={false}
+										bind:value={daysOfWeek}
+										items={safeSelectItems(daysOfWeekOptions)}
 										placeholder="Every day"
-										ulOptionsClass={'!bg-surface-secondary'}
 									/>
 								</div>
 							{/if}
@@ -331,13 +309,12 @@
 									{/if}
 									<div class="w-full flex gap-4">
 										<div class="w-full flex">
-											<Multiselect
+											<MultiSelect
+												disablePortal
 												{disabled}
-												bind:selected={daysOfMonth}
-												options={daysOfMonthOptions}
-												selectedOptionsDraggable={false}
+												bind:value={daysOfMonth}
+												items={safeSelectItems(daysOfMonthOptions)}
 												placeholder="Every day"
-												ulOptionsClass={'!bg-surface-secondary'}
 											/>
 										</div>
 

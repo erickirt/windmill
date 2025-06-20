@@ -9,13 +9,12 @@
 	import { usedTriggerKinds, userStore, workspaceStore } from '$lib/stores'
 	import { canWrite, emptyString, emptyStringTrimmed, sendUserToast } from '$lib/utils'
 	import Section from '$lib/components/Section.svelte'
-	import { Loader2, X } from 'lucide-svelte'
+	import { Loader2 } from 'lucide-svelte'
 	import Label from '$lib/components/Label.svelte'
 	import ResourcePicker from '$lib/components/ResourcePicker.svelte'
 	import Tooltip from '$lib/components/Tooltip.svelte'
 	import ToggleButton from '$lib/components/common/toggleButton-v2/ToggleButton.svelte'
 	import ToggleButtonGroup from '$lib/components/common/toggleButton-v2/ToggleButtonGroup.svelte'
-	import MultiSelect from 'svelte-multiselect'
 	import PublicationPicker from './PublicationPicker.svelte'
 	import SlotPicker from './SlotPicker.svelte'
 	import { random_adj } from '$lib/components/random_positive_adjetive'
@@ -25,11 +24,13 @@
 	import { invalidRelations, savePostgresTriggerFromCfg } from './utils'
 	import CheckPostgresRequirement from './CheckPostgresRequirement.svelte'
 	import { base } from '$lib/base'
-	import type { Snippet } from 'svelte'
+	import { untrack, type Snippet } from 'svelte'
 	import TriggerEditorToolbar from '../TriggerEditorToolbar.svelte'
 	import TestingBadge from '../testingBadge.svelte'
-	import { handleConfigChange } from '../utils'
+	import { handleConfigChange, type Trigger } from '../utils'
 	import { fade } from 'svelte/transition'
+	import MultiSelect from '$lib/components/select/MultiSelect.svelte'
+	import { safeSelectItems } from '$lib/components/select/utils.svelte'
 
 	interface Props {
 		useDrawer?: boolean
@@ -38,8 +39,7 @@
 		isEditor?: boolean
 		hideTooltips?: boolean
 		allowDraft?: boolean
-		hasDraft?: boolean
-		isDraftOnly?: boolean
+		trigger?: Trigger
 		isDeployed?: boolean
 		cloudDisabled?: boolean
 		customLabel?: Snippet
@@ -57,8 +57,7 @@
 		isEditor = false,
 		hideTooltips = false,
 		allowDraft = false,
-		hasDraft = false,
-		isDraftOnly = false,
+		trigger = undefined,
 		isDeployed = false,
 		cloudDisabled = false,
 		customLabel = undefined,
@@ -72,33 +71,39 @@
 	let drawer: Drawer | undefined = $state(undefined)
 	let is_flow: boolean = $state(false)
 	let initialPath = $state('')
-	let edit = $state(true)
+	let edit: boolean = $state(true)
 	let itemKind: 'flow' | 'script' = $state('script')
-	let script_path = $state('')
-	let initialScriptPath = $state('')
-	let fixedScriptPath = $state('')
+	let script_path: string = $state('')
+	let initialScriptPath: string = $state('')
+	let fixedScriptPath: string = $state('')
 	let path: string = $state('')
 	let pathError = $state('')
-	let enabled = $state(false)
-	let dirtyPath = $state(false)
-	let can_write = $state(true)
-	let drawerLoading = $state(true)
-	let showLoading = $state(false)
-	let postgres_resource_path = $state('')
+	let enabled: boolean = $state(false)
+	let dirtyPath: boolean = $state(false)
+	let can_write: boolean = $state(true)
+	let drawerLoading: boolean = $state(true)
+	let showLoading: boolean = $state(false)
+	let postgres_resource_path: string = $state('')
 	let publication_name: string = $state('')
 	let replication_slot_name: string = $state('')
 	let relations: Relations[] | undefined = $state([])
 	let transaction_to_track: string[] = $state([])
 	let language: Language = 'Typescript'
 	let loading = $state(false)
+	let postgresVersion: string = $state('')
+	let loadingPostgres: boolean = $state(false)
 	type actions = 'create' | 'get'
 	let selectedPublicationAction: actions | undefined = $state(undefined)
 	let selectedSlotAction: actions | undefined = $state(undefined)
 	let publicationItems: string[] = $state([])
-	let transactionType: string[] = ['Insert', 'Update', 'Delete']
+	let transactionType: string[] = $state(['Insert', 'Update', 'Delete'])
 	let tab: 'advanced' | 'basic' = $state('basic')
+	let basic_mode = $derived(tab === 'basic')
 	let initialConfig: Record<string, any> | undefined = undefined
 	let deploymentLoading = $state(false)
+	let creatingSlot: boolean = $state(false)
+	let creatingPublication: boolean = $state(false)
+	let pg14: boolean = $derived(postgresVersion.startsWith('14'))
 
 	const errorMessage = $derived.by(() => {
 		if (relations && relations.length > 0) {
@@ -110,16 +115,6 @@
 		return ''
 	})
 
-	const isValid = $derived(
-		!emptyString(postgres_resource_path) &&
-			!emptyString(script_path) &&
-			!emptyString(publication_name) &&
-			!emptyString(replication_slot_name) &&
-			!errorMessage
-	)
-	const postgresConfig = $derived.by(getSaveCfg)
-	const captureConfig = $derived.by(isEditor ? getCaptureConfig : () => ({}))
-
 	function isAdvancedTab(t: 'advanced' | 'basic'): boolean {
 		return t === 'advanced'
 	}
@@ -128,20 +123,26 @@
 		return t === 'basic'
 	}
 
-	let saveDisabled = $derived(
-		pathError !== '' ||
-			emptyString(postgres_resource_path) ||
-			emptyString(script_path) ||
-			(isAdvancedTab(tab) && emptyString(replication_slot_name)) ||
-			emptyString(publication_name) ||
-			(relations && isBasicTab(tab) && relations.length === 0) ||
-			transaction_to_track.length === 0 ||
-			drawerLoading ||
-			!can_write
+	const isValid = $derived(
+		!emptyString(postgres_resource_path) &&
+			transaction_to_track.length > 0 &&
+			((isAdvancedTab(tab) &&
+				!emptyString(replication_slot_name) &&
+				!emptyString(publication_name)) ||
+				(isBasicTab(tab) && (!relations || relations.length > 0))) &&
+			!errorMessage
+	)
+
+	const postgresConfig = $derived.by(getSaveCfg)
+	const captureConfig = $derived.by(isEditor ? getCaptureConfig : () => ({}))
+
+	const saveDisabled = $derived(
+		pathError !== '' || emptyString(script_path) || drawerLoading || !can_write || !isValid
 	)
 
 	async function createPublication() {
 		try {
+			creatingPublication = true
 			const message = await PostgresTriggerService.createPostgresPublication({
 				path: postgres_resource_path,
 				publication: publication_name as string,
@@ -155,11 +156,14 @@
 			sendUserToast(message)
 		} catch (error) {
 			sendUserToast(error.body, true)
+		} finally {
+			creatingPublication = false
 		}
 	}
 
 	async function createSlot() {
 		try {
+			creatingSlot = true
 			const message = await PostgresTriggerService.createPostgresReplicationSlot({
 				path: postgres_resource_path,
 				workspace: $workspaceStore!,
@@ -170,6 +174,8 @@
 			sendUserToast(message)
 		} catch (error) {
 			sendUserToast(error.body, true)
+		} finally {
+			creatingSlot = false
 		}
 	}
 
@@ -320,6 +326,7 @@
 	function getCaptureConfig() {
 		return {
 			postgres_resource_path,
+			basic_mode,
 			publication:
 				!edit || tab === 'basic'
 					? {
@@ -378,7 +385,7 @@
 
 	async function handleToggleEnabled(toggleEnabled: boolean) {
 		enabled = toggleEnabled
-		if (!isDraftOnly && !hasDraft) {
+		if (!trigger?.draftConfig) {
 			await PostgresTriggerService.setPostgresTriggerEnabled({
 				path: initialPath,
 				workspace: $workspaceStore ?? '',
@@ -389,12 +396,32 @@
 	}
 
 	$effect(() => {
-		onCaptureConfigChange?.(captureConfig, isValid)
+		const args = [captureConfig, isValid] as const
+		untrack(() => onCaptureConfigChange?.(...args))
 	})
 
 	$effect(() => {
 		if (!drawerLoading) {
 			handleConfigChange(postgresConfig, initialConfig, saveDisabled, edit, onConfigChange)
+		}
+	})
+
+	$effect(() => {
+		if (postgres_resource_path) {
+			loadingPostgres = true
+			PostgresTriggerService.getPostgresVersion({
+				workspace: $workspaceStore!,
+				path: postgres_resource_path
+			})
+				.then((version: string) => {
+					postgresVersion = version
+				})
+				.catch((error: any) => {
+					sendUserToast(error.body, true)
+				})
+				.finally(() => {
+					loadingPostgres = false
+				})
 		}
 	})
 </script>
@@ -409,29 +436,28 @@
 				: 'New Postgres trigger'}
 			on:close={drawer.closeDrawer}
 		>
-			<svelte:fragment slot="actions">{@render actions()}</svelte:fragment>
+			{#snippet actions()}{@render actionsSnippet()}{/snippet}
 			{@render content()}
 		</DrawerContent>
 	</Drawer>
 {:else}
 	<Section label={!customLabel ? 'Postgres trigger' : ''} headerClass="grow min-w-0 h-[30px]">
-		<svelte:fragment slot="header">
+		{#snippet header()}
 			{#if customLabel}
 				{@render customLabel()}
 			{/if}
-		</svelte:fragment>
-		<svelte:fragment slot="action">
-			{@render actions()}
-		</svelte:fragment>
+		{/snippet}
+		{#snippet action()}
+			{@render actionsSnippet()}
+		{/snippet}
 		{@render content()}
 	</Section>
 {/if}
 
-{#snippet actions()}
+{#snippet actionsSnippet()}
 	{#if !drawerLoading}
 		<TriggerEditorToolbar
-			{isDraftOnly}
-			{hasDraft}
+			{trigger}
 			permissions={drawerLoading || !can_write ? 'none' : 'create'}
 			{saveDisabled}
 			{allowDraft}
@@ -451,8 +477,10 @@
 {#snippet content()}
 	{#if drawerLoading}
 		{#if showLoading}
-			<Loader2 size="50" class="animate-spin" />
-			<p>Loading...</p>
+			<div class="flex flex-col items-center justify-center h-full w-full">
+				<Loader2 size="50" class="animate-spin" />
+				<p>Loading...</p>
+			</div>
 		{/if}
 	{:else}
 		<div class="flex flex-col gap-4">
@@ -500,7 +528,7 @@
 							allowEdit={!$userStore?.operator}
 						/>
 
-						{#if emptyStringTrimmed(script_path) && is_flow === false}
+						{#if emptyString(script_path) && is_flow === false}
 							<div class="flex">
 								<Button
 									disabled={!can_write}
@@ -524,11 +552,11 @@
 				</Section>
 			{/if}
 			<Section label="Database">
-				<svelte:fragment slot="badge">
+				{#snippet badge()}
 					{#if isEditor}
 						<TestingBadge />
 					{/if}
-				</svelte:fragment>
+				{/snippet}
 				<p class="text-xs text-tertiary mb-2">
 					Pick a database to connect to <Required required={true} />
 				</p>
@@ -541,8 +569,12 @@
 						/>
 						<CheckPostgresRequirement bind:postgres_resource_path bind:can_write />
 					</div>
-
-					{#if postgres_resource_path}
+					{#if loadingPostgres}
+						<div class="flex flex-col items-center justify-center h-full w-full">
+							<Loader2 size="50" class="animate-spin" />
+							<p>Loading...</p>
+						</div>
+					{:else if postgres_resource_path}
 						<Label label="Transactions">
 							{#snippet header()}
 								<Tooltip>
@@ -555,27 +587,12 @@
 								</Tooltip>
 							{/snippet}
 							<MultiSelect
-								noMatchingOptionsMsg=""
-								createOptionMsg={null}
-								duplicates={false}
-								options={transactionType}
-								allowUserOptions="append"
-								bind:selected={transaction_to_track}
-								ulOptionsClass={'!bg-surface !text-sm'}
-								ulSelectedClass="!text-sm"
-								outerDivClass="!bg-surface !min-h-[38px] !border-[#d1d5db]"
+								bind:value={transaction_to_track}
+								items={safeSelectItems(transactionType)}
+								onCreateItem={(x) => (transactionType.push(x), transaction_to_track.push(x))}
 								placeholder="Select transactions"
-								--sms-options-margin="4px"
-								--sms-open-z-index="100"
 								disabled={!can_write}
-							>
-								<!-- @migration-task: migrate this slot by hand, `remove-icon` is an invalid identifier -->
-								<svelte:fragment slot="remove-icon">
-									<div class="hover:text-primary p-0.5">
-										<X size={12} />
-									</div>
-								</svelte:fragment>
-							</MultiSelect>
+							/>
 						</Label>
 						<Label label="Table Tracking" headerClass="grow min-w-0">
 							{#snippet header()}
@@ -633,10 +650,10 @@
 										></div
 									></Tab
 								>
-								<svelte:fragment slot="content">
+								{#snippet content()}
 									<div class="mt-5 overflow-hidden bg-surface">
 										<TabContent value="basic">
-											<RelationPicker {can_write} bind:relations disabled={!can_write} />
+											<RelationPicker {can_write} bind:pg14 bind:relations disabled={!can_write} />
 										</TabContent>
 										<TabContent value="advanced">
 											<div class="flex flex-col gap-6"
@@ -668,6 +685,7 @@
 																	disabled={!can_write}
 																/>
 																<Button
+																	loading={creatingSlot}
 																	color="light"
 																	size="xs"
 																	variant="border"
@@ -723,6 +741,7 @@
 																	placeholder={'Publication Name'}
 																/>
 																<Button
+																	loading={creatingPublication}
 																	color="light"
 																	size="xs"
 																	variant="border"
@@ -743,13 +762,18 @@
 																disabled={!can_write}
 															/>
 														{/if}
-														<RelationPicker {can_write} bind:relations disabled={!can_write} />
+														<RelationPicker
+															bind:pg14
+															{can_write}
+															bind:relations
+															disabled={!can_write}
+														/>
 													</div>
 												</Section></div
 											>
 										</TabContent>
 									</div>
-								</svelte:fragment>
+								{/snippet}
 							</Tabs>
 						</Label>
 					{/if}

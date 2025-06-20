@@ -25,7 +25,7 @@ use sqlx::{types::Json, FromRow, Pool, Postgres, Transaction};
 use tokio::{sync::RwLock, time::sleep};
 use ulid::Ulid;
 use uuid::Uuid;
-use windmill_audit::audit_ee::{audit_log, AuditAuthor};
+use windmill_audit::audit_oss::{audit_log, AuditAuthor};
 use windmill_audit::ActionKind;
 
 #[cfg(feature = "benchmark")]
@@ -71,7 +71,7 @@ use windmill_common::BASE_URL;
 use windmill_common::users::SUPERADMIN_SYNC_EMAIL;
 
 use crate::flow_status::{update_flow_status_in_progress, update_workflow_as_code_status};
-use crate::jobs_ee::update_concurrency_counter;
+use crate::jobs_oss::update_concurrency_counter;
 use crate::schedule::{get_schedule_opt, push_scheduled_job};
 use crate::tags::per_workspace_tag;
 
@@ -391,6 +391,7 @@ pub async fn append_logs(
             if let Err(e) = client
             .post::<_, String>(
                 &format!("/api/w/{}/agent_workers/push_logs/{}", workspace.as_ref(), job_id),
+                None,
                 &logs.as_ref(),
             )
             .await {
@@ -1010,33 +1011,43 @@ pub async fn add_completed_job<T: Serialize + Send + Sync + ValidableJson>(
 
     #[cfg(feature = "cloud")]
     if *CLOUD_HOSTED && !queued_job.is_flow() && _duration > 1000 {
-        let additional_usage = _duration / 1000;
-        let w_id = &queued_job.workspace_id;
-        let premium_workspace = windmill_common::workspaces::is_premium_workspace(db, w_id).await;
-        let _ = sqlx::query!(
-            "INSERT INTO usage (id, is_workspace, month_, usage) 
-            VALUES ($1, TRUE, EXTRACT(YEAR FROM current_date) * 12 + EXTRACT(MONTH FROM current_date), $2) 
-            ON CONFLICT (id, is_workspace, month_) DO UPDATE SET usage = usage.usage + $2",
-            w_id,
-            additional_usage as i32
-        )
-        .execute(db)
-        .await
-        .map_err(|e| Error::internal_err(format!("updating usage: {e:#}")));
-
-        if !premium_workspace {
+        let db = db.clone();
+        let w_id = queued_job.workspace_id.clone();
+        let email = queued_job.permissioned_as_email.clone();
+        let w_id2 = w_id.clone();
+        let email2 = email.clone();
+        tokio::task::spawn(async move {
+            let additional_usage = _duration / 1000;
+            let premium_workspace = windmill_common::workspaces::is_premium_workspace(&db, &w_id).await;
+            tokio::time::timeout(std::time::Duration::from_secs(10), async move {
             let _ = sqlx::query!(
                 "INSERT INTO usage (id, is_workspace, month_, usage) 
-                VALUES ($1, FALSE, EXTRACT(YEAR FROM current_date) * 12 + EXTRACT(MONTH FROM current_date), $2) 
+                VALUES ($1, TRUE, EXTRACT(YEAR FROM current_date) * 12 + EXTRACT(MONTH FROM current_date), $2) 
                 ON CONFLICT (id, is_workspace, month_) DO UPDATE SET usage = usage.usage + $2",
-                queued_job.permissioned_as_email,
+                w_id,
                 additional_usage as i32
             )
-            .execute(db)
+            .execute(&db)
             .await
             .map_err(|e| Error::internal_err(format!("updating usage: {e:#}")));
-        }
+
+            if !premium_workspace {
+                let _ = sqlx::query!(
+                    "INSERT INTO usage (id, is_workspace, month_, usage) 
+                    VALUES ($1, FALSE, EXTRACT(YEAR FROM current_date) * 12 + EXTRACT(MONTH FROM current_date), $2) 
+                    ON CONFLICT (id, is_workspace, month_) DO UPDATE SET usage = usage.usage + $2",
+                    email,
+                    additional_usage as i32
+                )
+                .execute(&db)
+                .await
+            .map_err(|e| Error::internal_err(format!("updating usage: {e:#}")));
+        }}).await.unwrap_or_else(|_| {
+            tracing::error!("Could not update usage for workspace {w_id2} and permissioned as {email2}, stopped after 10s");
+        });
+    });
     }
+    
 
     #[cfg(feature = "enterprise")]
     if !success {
@@ -2127,7 +2138,7 @@ pub struct PulledJob {
 // NOTE:
 // Precomputed by the server
 // Used to offload work from agent workers to server
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum PrecomputedAgentInfo {
     Bun { local: String, remote: String },
     Python {
@@ -2138,7 +2149,7 @@ pub enum PrecomputedAgentInfo {
         requirements: Option<String> },
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct JobAndPerms {
     pub job: MiniPulledJob,
     pub raw_code: Option<String>,
@@ -2290,16 +2301,20 @@ pub async fn pull(
     db: &Pool<Postgres>,
     suspend_first: bool,
     worker_name: &str,
-    query_o: Option<(String, String)>,
+    query_o: Option<&(String, String)>,
     #[cfg(feature = "benchmark")] bench: &mut BenchmarkIter,
 ) -> windmill_common::error::Result<PulledJobResult> {
     loop {
-        if let Some((query_suspended, query_no_suspend)) = query_o.as_ref() {
+        if let Some((query_suspended, query_no_suspend)) = query_o {
             let njob = {
-                let job = sqlx::query_as::<_, PulledJob>(query_suspended)
+                let job = if query_suspended.is_empty() {
+                    None
+                } else {
+                    sqlx::query_as::<_, PulledJob>(query_suspended)
                     .bind(worker_name)
                     .fetch_optional(db)
-                    .await?;
+                    .await?
+                };
                 if let Some(job) = job {
                     PulledJobResult { job: Some(job), suspended: true }
                 } else {
@@ -2549,7 +2564,6 @@ async fn pull_single_job_and_mark_as_running_no_concurrency_limit<'c>(
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
             return Ok((None, false));
         }
-
         let r = if suspend_first {
             // tracing::info!("Pulling job with query: {}", query);
             sqlx::query_as::<_, PulledJob>(&query)
@@ -2702,15 +2716,14 @@ pub async fn get_result_by_id(
     .await
     {
         Ok(res) => Ok(res),
-        Err(_) => {
+        Err(e) => {
             let root = sqlx::query!(
                 "SELECT
                     id As \"id!\",
                     flow_status->'restarted_from'->'flow_job_id' AS \"restarted_from: Json<Uuid>\"
-                FROM v2_as_queue
-                WHERE COALESCE((SELECT flow_innermost_root_job FROM v2_job WHERE id = $1), $1) = id AND workspace_id = $2",
-                flow_id,
-                &w_id
+                FROM v2_job_status
+                WHERE COALESCE((SELECT flow_innermost_root_job FROM v2_job WHERE id = $1), $1) = id",
+                flow_id
             )
             .fetch_optional(&db)
             .await?;
@@ -2719,7 +2732,7 @@ pub async fn get_result_by_id(
                     let restarted_from_id = not_found_if_none(
                         root.restarted_from,
                         "Id not found in the result's mapping of the root job and root job had no restarted from information",
-                        format!("parent: {}, root: {}, id: {}", flow_id, root.id, node_id),
+                        format!("parent: {}, root: {}, id: {}, error: {e:#}", flow_id, root.id, node_id),
                     )?;
 
                     get_result_by_id_from_original_flow(
@@ -2849,9 +2862,10 @@ pub async fn get_result_by_id_from_running_flow_inner(
     node_id: &str,
 ) -> error::Result<JobResult> {
     let flow_job_result = sqlx::query!(
-        "SELECT leaf_jobs->$1::text AS \"leaf_jobs: Json<Box<RawValue>>\", parent_job
-        FROM v2_as_queue
-        WHERE COALESCE((SELECT flow_innermost_root_job FROM v2_job WHERE id = $2), $2) = id AND workspace_id = $3",
+        "SELECT flow_leaf_jobs->$1::text AS \"leaf_jobs: Json<Box<RawValue>>\", v2_job.parent_job
+        FROM v2_job_status
+        LEFT JOIN v2_job ON v2_job.id = v2_job_status.id AND v2_job.workspace_id = $3
+        WHERE COALESCE((SELECT flow_innermost_root_job FROM v2_job WHERE id = $2), $2) = v2_job_status.id",
         node_id,
         flow_id,
         w_id,
@@ -2859,11 +2873,13 @@ pub async fn get_result_by_id_from_running_flow_inner(
     .fetch_optional(db)
     .await?;
 
+    // tracing::error!("flow_job_result: {:?} {:?}", flow_job_result, flow_id);
     let flow_job_result = windmill_common::utils::not_found_if_none(
         flow_job_result,
         "Root job of parent runnnig flow",
         format!("parent: {}, id: {}", flow_id, node_id),
     )?;
+    // tracing::error!("flow_job_result: {:?}, {:?}", flow_job_result.leaf_jobs, flow_job_result.parent_job);
 
     let job_result = flow_job_result
         .leaf_jobs
@@ -3265,35 +3281,40 @@ pub async fn push<'c, 'd>(
             job_payload,
             JobPayload::Flow { .. } | JobPayload::RawFlow { .. }
         ) {
-            let workspace_usage = sqlx::query_scalar!(
-                    "INSERT INTO usage (id, is_workspace, month_, usage)
-                    VALUES ($1, TRUE, EXTRACT(YEAR FROM current_date) * 12 + EXTRACT(MONTH FROM current_date), 1)
-                    ON CONFLICT (id, is_workspace, month_) DO UPDATE SET usage = usage.usage + 1 
-                    RETURNING usage.usage",
-                    workspace_id
-                )
-                .fetch_one(_db)
-                .await
-                .map_err(|e| Error::internal_err(format!("updating usage: {e:#}")))?;
+            tokio::time::timeout(std::time::Duration::from_secs(10), async move {
+                let workspace_usage = sqlx::query_scalar!(
+                        "INSERT INTO usage (id, is_workspace, month_, usage)
+                        VALUES ($1, TRUE, EXTRACT(YEAR FROM current_date) * 12 + EXTRACT(MONTH FROM current_date), 1)
+                        ON CONFLICT (id, is_workspace, month_) DO UPDATE SET usage = usage.usage + 1 
+                        RETURNING usage.usage",
+                        workspace_id
+                    )
+                    .fetch_one(_db)
+                    .await
+                    .map_err(|e| Error::internal_err(format!("updating usage: {e:#}")))?;
 
-            let user_usage = if !premium_workspace {
-                Some(sqlx::query_scalar!(
-                    "INSERT INTO usage (id, is_workspace, month_, usage)
-                    VALUES ($1, FALSE, EXTRACT(YEAR FROM current_date) * 12 + EXTRACT(MONTH FROM current_date), 1)
-                    ON CONFLICT (id, is_workspace, month_) DO UPDATE SET usage = usage.usage + 1 
-                    RETURNING usage.usage",
-                    email
-                )
-                .fetch_one(_db)
-                .await
-                .map_err(|e| Error::internal_err(format!("updating usage: {e:#}")))?)
-            } else {
-                None
-            };
-            (Some(workspace_usage), user_usage)
+                let user_usage = if !premium_workspace {
+                    Some(sqlx::query_scalar!(
+                        "INSERT INTO usage (id, is_workspace, month_, usage)
+                        VALUES ($1, FALSE, EXTRACT(YEAR FROM current_date) * 12 + EXTRACT(MONTH FROM current_date), 1)
+                        ON CONFLICT (id, is_workspace, month_) DO UPDATE SET usage = usage.usage + 1 
+                        RETURNING usage.usage",
+                        email
+                    )
+                    .fetch_one(_db)
+                    .await
+                    .map_err(|e| Error::internal_err(format!("updating usage: {e:#}")))?)
+                } else {
+                    None
+                };
+                Ok((Some(workspace_usage), user_usage))
+            }).await.unwrap_or_else(|e| {
+                tracing::error!("Could not update usage for workspace {workspace_id} and permissioned as {email}, stopped after 10s: {e:#}");
+                Err(Error::internal_err(format!("Could not update usage for workspace {workspace_id} and permissioned as {email}, stopped after 10s: {e:#}")))
+            })
         } else {
-            (None, None)
-        };
+            Ok((None, None))
+        }?;
 
         if !premium_workspace {
             let is_super_admin =
@@ -4009,6 +4030,7 @@ pub async fn push<'c, 'd>(
         ),
     };
 
+
     let final_priority: Option<i16>;
     #[cfg(not(feature = "enterprise"))]
     {
@@ -4210,10 +4232,10 @@ pub async fn push<'c, 'd>(
             INSERT INTO v2_job (id, workspace_id, raw_code, raw_lock, raw_flow, tag, parent_job,
                 created_by, permissioned_as, runnable_id, runnable_path, args, kind, trigger,
             script_lang, same_worker, pre_run_error, permissioned_as_email, visible_to_owner,
-            flow_innermost_root_job, concurrent_limit, concurrency_time_window_s, timeout, flow_step_id,
+            flow_innermost_root_job, root_job, concurrent_limit, concurrency_time_window_s, timeout, flow_step_id,
             cache_ttl, priority, trigger_kind, script_entrypoint_override, preprocessed)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-            $19, $20, $21, $22, $23, $24, $25, $26,
+            $19, $20, $38, $21, $22, $23, $24, $25, $26,
             CASE WHEN $14::VARCHAR IS NOT NULL THEN 'schedule'::job_trigger_kind END,
             ($12::JSONB)->>'_ENTRYPOINT_OVERRIDE', $27)
         ),
@@ -4269,6 +4291,7 @@ pub async fn push<'c, 'd>(
         job_authed.is_operator,
         folders.as_slice(),
         job_authed.groups.as_slice(),
+        root_job.or(parent_job)
     )
     .execute(&mut *tx)
     .warn_after_seconds(1)
